@@ -1,0 +1,874 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+---
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r packages}
+
+# install.packages("ggsci")
+# install.packages("ggplot2")
+# install.packages("viridis")
+# install.packages("devtools")
+# install.packages("RColorBrewer")
+# install.packages("pheatmap")
+# install.packages("ggforce")
+# install.packages("Hmisc")
+# install.packages("car")
+# install.packages("tidyverse")
+# install.packages("here")
+# install.packages("ggpubr")
+# install.packages("table1")
+# install.packages("bestNormalize")
+# install.packages("ggnewscale")
+# install.packages("bedr")
+# 
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install("topGO")
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("biomaRt")
+# BiocManager::install("DESeq2")
+# BiocManager::install("pathview")
+# BiocManager::install("ReactomePA")
+
+```
+
+```{r Libraries}
+
+
+library(DESeq2)
+library(ggplot2)
+library(Hmisc)
+library(dplyr)
+library(reshape2)
+library(car)
+library(tidyverse)
+library(readxl)
+library(magrittr)
+library(stringr)
+library(here)
+library(gridExtra)
+library(ggpubr)
+library(patchwork)
+library(boot)
+library(table1)
+library(tidyr)
+library(bestNormalize)
+library(knitr)
+library(viridisLite)
+library(viridis)
+library(ggsci)
+library(RColorBrewer)
+library(pheatmap)
+library(ggsci)
+library(ggrepel)
+library(biomaRt)
+library(data.table)
+library(clusterProfiler)
+library(pathview)
+library(ggnewscale)
+library(ggplot2)
+library(topGO)
+library(ReactomePA)
+
+```
+
+```{r restructuring input file}
+
+setwd("C:/Users/jespe/OneDrive/Documenten/RijksUniversiteit Groningen/Master BMS/From Big data to personalized medicine/Practical/Analysis/Final data analysis")
+
+### Table setup
+countTable <- read.table("BMS_practicum_okt2022.expression.genelevel.v75.htseq.txt", header=TRUE)
+# to continue with the table, we need to create rownames of the column named "probes" in which the gene_IDs are located
+
+rownames(countTable) <- countTable$probe
+countTable <- countTable[,-1]
+head(countTable)
+
+head(colnames(countTable))
+
+# Use the information in the column names to generate a data.frame comprising the sample information.
+colData <- data.frame(row.names = colnames(countTable), 
+                      condition= unlist(lapply(colnames(countTable), 
+                                               function(x){unlist(strsplit(x, split = "_"))[3]})), 
+                      sample_number= unlist(lapply(colnames(countTable), 
+                                                   function(x){unlist(strsplit(x, split = "_"))[2]}))
+)
+
+colData$sample_number <- as.factor(colData$sample_number)
+colData$condition <- as.factor(colData$condition)
+
+# Add library size, which is the total amount of gene reads per sample
+colData$libSize <- colSums(countTable)
+
+#First 6 rowns of the colData object
+head(colData)
+
+all(rownames(colData) %in% colnames(countTable))
+
+# colData$libSize <- as.factor(colData$libSize)
+
+# Save your countTable and colData
+# write.csv(countTable, file="./countTable.csv")
+# write.csv(colData, file="./colData.csv")
+
+```
+
+```{r normalization}
+
+###Normalize of read counts
+library(DESeq2)
+
+
+#creating dds object, only including condition in model (there may be a warning, which you may ignore)
+dds <- DESeqDataSetFromMatrix(countData = countTable,
+                              colData = colData,
+                              design = ~ condition)
+
+```
+
+```{r removing poorly expressed}
+
+### Removing poorly expressed genes
+# We will create a histogram of the sum of counts in all samples for all genes. If you want to safe your histogram, you first want to create a file to write the plot to:
+# pdf("hist_rowSums_genes.pdf")
+
+# Now create a histogram with the sum of the expression level of each gene in all samples
+hist(log10((rowSums((countTable)))), breaks = 50, xlab = "log10 sum read counts per gene", main = "Histogram un-normalized counts")
+
+# You will notice a bi-modal distribution, in which a large chunk of genes is barely expressed, and a smaller chuck is expressed much more.
+#Add arbitrary cut-offs to histogram 
+# Cutoff of 10
+abline(v = log10(10), col = "blue",lwd = 2)
+# cutoff of 100
+abline(v = log10(100), col = "purple",lwd = 2)
+# cutoff of 500
+abline(v = log10(500), col = "red",lwd = 2)
+# cutoff of 1000
+abline(v = log10(1000), col = "orange",lwd = 2)
+
+# now save the plot using 
+# dev.off()
+## quartz_off_screen 
+
+```
+
+```{r filtering genes}
+
+#filtering genes with low read counts
+keep <- rowSums(countTable) >= 10
+dds_keep <- dds[keep,]
+
+dds_keep <- DESeq(dds_keep)
+# # Check how many genes are left
+nrow(dds_keep)
+
+vst <- assay(vst(dds_keep, blind=FALSE))
+
+```
+
+```{r PCA}
+
+### PCA plotting 
+# To calculate the components by sample we need to transpose our matrix of normalized gene expression 
+pcData <- prcomp(t(vst))
+pcVar <- summary(pcData)
+# By getting the summary() of a prcomp object (in this case pcData) we can also obtain the total ammount of variance explained by each of the components.
+pcVar$importance
+
+
+
+varPC1 <- pcVar$importance[2,1]
+varPC2 <- pcVar$importance[2,2]
+varPC3 <- pcVar$importance[2,3]
+varPC4 <- pcVar$importance[2,4]
+
+
+pcPlotData <- data.frame(pcData$x[,1:4], colData[rownames(colData) %in% rownames(pcData$x),])
+head(pcPlotData)
+
+```
+
+```{r PCA plot}
+
+library(ggplot2)
+library(viridis)
+library(ggsci)
+#library(ggbiplot)
+
+pcaPlot <- ggplot(pcPlotData, aes(x=PC1 , y=PC2 , color=condition))+
+  geom_jitter(alpha=0.6)+
+  xlab(paste0("PC1 explained variance = ", varPC1*100, "%"))+
+  ylab(paste0("PC2 explained variance = ", varPC2*100, "%"))+
+  scale_color_nejm()+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  guides(col = guide_legend(ncol = 8))
+
+# display the pca plot in "Plots"
+pcaPlot
+
+# pdf("./PCA1-2_2022.pdf", height = 7.5, width=7.5)
+# pcaPlot
+# dev.off()
+
+```
+
+```{r Heatmap}
+
+library(RColorBrewer)
+library(pheatmap)
+
+# Again we need to transpose our matrix to then calculate the distance between each of the samples.
+sampleDists <- dist(t(vst))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+# By using brewer.pal() we can generate a palette of colors, for more colors check (http://colorbrewer2.org/)
+colors <- colorRampPalette(brewer.pal(9, "BuPu"))(255) 
+
+
+distHeatmap <- pheatmap(sampleDistMatrix, main = "test",
+                        show_colnames = FALSE,
+                        annotation = colData[,c("condition",as.character("sample_number"))],
+                        clustering_distance_rows=sampleDists,
+                        clustering_distance_cols=sampleDists,
+                        col=colors,
+                        fontsize_row = 6)
+
+# display the heatmap plot in "Plots"
+distHeatmap
+
+# pdf(".distanceHeatmap_2022.pdf", height = 7.5, width=7.5)
+# distHeatmap
+# dev.off()
+
+```
+
+```{r design}
+
+design(dds_keep) <- formula(~ condition)
+dds_keep <- DESeq(dds_keep)
+
+mod_mat <- model.matrix(design(dds_keep), colData)
+unstim <- colMeans(mod_mat[dds_keep$condition == "unstim", ])
+IFNg <- colMeans(mod_mat[dds_keep$condition == "IFNg", ])
+IL17 <- colMeans(mod_mat[dds_keep$condition == "IL17", ])
+
+```
+
+```{r IFNg}
+# obtain results for each pairwise comparison that we would like to make
+#unstimvsIFNg
+# get results from the DEseq dds table by contrasting untreated with control samples
+df.unstimvsIFNg <- results(dds_keep, contrast = IFNg - unstim )
+# order by most significant gene
+df.unstimvsIFNg <- df.unstimvsIFNg[order(df.unstimvsIFNg$padj), ]
+ 
+ 
+df.unstimvsIFNg <- as.data.frame(df.unstimvsIFNg)
+head(df.unstimvsIFNg)
+ 
+df.sign.unstimvsIFNg <- df.unstimvsIFNg[df.unstimvsIFNg$padj < 0.05 & abs(df.unstimvsIFNg$log2FoldChange) > 1,]
+nrow(df.sign.unstimvsIFNg)
+```
+
+```{r Extra annotation}
+# define which biomart data you would like to 
+library(biomaRt)
+
+ensembl  <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl", GRCh=37)
+ 
+# You can do the same for all the genes in the differential expression analysis
+genemap <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol", "entrezgene_id","gene_biotype","chromosome_name","start_position","end_position","strand"),
+                 filters = "ensembl_gene_id",
+                 values = rownames(df.unstimvsIFNg),
+                 mart = ensembl )
+df.unstimvsIFNg_extra <- merge(x = df.unstimvsIFNg, y = genemap, by.x = 0, by.y = "ensembl_gene_id", all.x = TRUE, all.y = FALSE)
+head(df.unstimvsIFNg_extra)
+nrow(df.unstimvsIFNg_extra)
+```
+
+```{r trim data}
+#remove duplicates
+tmp <- df.unstimvsIFNg_extra[duplicated(df.unstimvsIFNg_extra$Row.names),]
+head(tmp)
+ 
+df.unstimvsIFNg_extra <- df.unstimvsIFNg_extra[!duplicated(df.unstimvsIFNg_extra$Row.names),]
+nrow(df.unstimvsIFNg_extra)
+ 
+#remove values with low p value
+df.unstimvsIFNg_extra <- df.unstimvsIFNg_extra[(df.unstimvsIFNg_extra$chromosome_name)!= "Y",]
+nrow(df.unstimvsIFNg_extra)
+```
+
+```{r cutoff significance}
+df.sign.unstimvsIFNg_extra <- df.unstimvsIFNg_extra[df.unstimvsIFNg_extra$padj < 0.05 & abs(df.unstimvsIFNg_extra$log2FoldChange) > 1,]
+head(df.sign.unstimvsIFNg_extra)
+ 
+dataIFNg <- na.omit(df.sign.unstimvsIFNg_extra)
+nrow(dataIFNg)
+```
+
+```{r IL17}
+# obtain results for each pairwise comparison that we would like to make
+#unstimvsIL17
+# get results from the DEseq dds table by contrasting untreated with control samples
+df.unstimvsIL17 <- results(dds_keep, contrast = IL17 - unstim)
+# order by most significant gene
+df.unstimvsIL17 <- df.unstimvsIL17[order(df.unstimvsIL17$padj), ]
+# Make a data frame and check
+df.unstimvsIL17 <- as.data.frame(df.unstimvsIL17)
+head(df.unstimvsIL17)
+ 
+df.sign.unstimvsIL17 <- df.unstimvsIL17[df.unstimvsIL17$padj < 0.05 & abs(df.unstimvsIL17$log2FoldChange) > 1,]
+nrow(df.sign.unstimvsIL17)
+```
+
+```{r Extra annotation}
+df.unstimvsIL17_extra <- merge(x = df.unstimvsIL17, y = genemap, by.x = 0, by.y = "ensembl_gene_id", all.x = TRUE, all.y = FALSE)
+head(df.unstimvsIL17_extra)
+nrow(df.unstimvsIL17_extra)
+```
+
+```{r trim data}
+#remove duplicates
+tmp1 <- df.unstimvsIL17_extra[duplicated(df.unstimvsIL17_extra$Row.names),]
+head(tmp1)
+ 
+df.unstimvsIL17_extra <- df.unstimvsIL17_extra[!duplicated(df.unstimvsIL17_extra$Row.names),]
+nrow(df.unstimvsIL17_extra)
+ 
+#remove values with low p value
+df.unstimvsIL17_extra <- df.unstimvsIL17_extra[(df.unstimvsIL17_extra$chromosome_name)!= "Y",]
+nrow(df.unstimvsIL17_extra)
+```
+
+```{r cutoff significance}
+df.sign.unstimvsIL17_extra <- df.unstimvsIL17_extra[df.unstimvsIL17_extra$padj < 0.05 & abs(df.unstimvsIL17_extra$log2FoldChange) > 1,]
+head(df.sign.unstimvsIL17_extra)
+ 
+dataIL17 <- na.omit(df.sign.unstimvsIL17_extra)
+nrow(dataIL17)
+```
+
+```{r save results}
+# 
+# write.csv(df.unstimvsIL17_extra, file = "C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IL17vsCTRL_DEresults_all_2022.csv")
+# 
+# write.csv(df.sign.unstimvsIL17_extra, file = "C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IL17vsCTRL_DEresults_sign_2022.csv")
+# 
+# 
+# write.csv(df.unstimvsIFNg_extra, file = "C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IFNgvsCTRL_DEresults_all_2022.csv")
+# write.csv(df.sign.unstimvsIFNg_extra, file = "C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IFNgvsCTRL_DEresults_sign_2022.csv")
+```
+
+```{r Volcano Sign IL17}
+
+pData <- as.data.frame(df.unstimvsIL17_extra[which(!is.na(df.unstimvsIL17_extra$padj)),])
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE genes")+
+                    theme_bw()
+              
+stim_Volcano
+
+pData$top15label <- NA
+pData$top15label[order(pData$padj)[1:8]] <- pData$hgnc_symbol[order(pData$padj)[1:8]]
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE_genes")+
+                    geom_text_repel(aes(label=top15label), max.overlaps = Inf)+ ##add the lables in the top 15
+                    theme_bw()+
+                    theme(legend.position = "bottom")
+
+stim_Volcano
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Volcano_topSign_IL17vsCTRL.pdf", height = 7.5, width=7.5)
+# stim_Volcano
+# dev.off()
+```
+
+```{r Volcano Sign IFNg}
+
+pData <- as.data.frame(df.unstimvsIFNg_extra[which(!is.na(df.unstimvsIFNg_extra$padj)),])
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE genes")+
+                    theme_bw()
+              
+stim_Volcano
+
+pData$top15label <- NA
+pData$top15label[order(pData$padj)[1:15]] <- pData$hgnc_symbol[order(pData$padj)[1:15]]
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE_genes")+
+                    geom_text_repel(aes(label=top15label), max.overlaps = Inf)+ ##add the lables in the top 15
+                    theme_bw()+
+                    theme(legend.position = "bottom")
+
+stim_Volcano
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Volcano_topSign_IFNgvsCTRL.pdf", height = 7.5, width=7.5) 
+# stim_Volcano
+# dev.off()
+
+```
+
+```{r Fold Change IFNg} 
+
+pData <- as.data.frame(df.unstimvsIFNg_extra[which(!is.na(df.unstimvsIFNg_extra$padj)),])
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE genes")+
+                    theme_bw()
+              
+stim_Volcano
+
+pData$top10label <- NA
+pData$top10label[order(-abs(pData$log2FoldChange))[1:10]] <- pData$hgnc_symbol[order(-abs(pData$log2FoldChange))[1:10]]
+stim_Volcano <- ggplot(pData, aes(x=log2FoldChange, y= -log10(padj)))+
+                    geom_point(aes(color= (abs(log2FoldChange)>1 & padj <= 0.01)))+
+                    geom_hline(yintercept = 0, lwd=0.8)+
+                    geom_vline(xintercept = 0, lwd=0.8)+
+                    geom_hline(yintercept = 2, lwd=1, alpha= 0.6, linetype = "dashed", color="blue")+
+                    geom_vline(xintercept = 1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    geom_vline(xintercept = -1, lwd=1, alpha= 0.6, linetype = "dashed",color="blue")+
+                    scale_color_d3()+
+                    ggtitle("DE_genes")+
+                    geom_text_repel(aes(label=top10label), max.overlaps = Inf)+ ##add the lables in the top 10
+                    theme_bw()+
+                    theme(legend.position = "bottom")
+
+stim_Volcano
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Volcano_topFoldChange_IFNgvsCTRL.pdf", height = 7.5, width=7.5)
+# stim_Volcano
+# dev.off()
+
+```
+
+```{r Heatmap IL17}
+
+# Basic heatmap
+vst <- assay(vst(dds_keep))
+
+dataIL17 <- df.sign.unstimvsIL17_extra[rowSums(is.na(df.sign.unstimvsIL17_extra)) != ncol(df.sign.unstimvsIL17_extra), ]
+
+IL17DEGenes <- vst[dataIL17$Row.names,]
+
+heatmap_DE <- pheatmap(IL17DEGenes, scale = "row",
+                       show_rownames = FALSE, 
+                       main = "IL17a vs CTRL")
+
+heatmap_DE
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Heatmap_IL17vsCTRL.pdf", height = 7.5, width=7.5)
+# heatmap_DE
+# dev.off()
+
+```
+
+```{r Heatmap IFNg} 
+
+vst <- assay(vst(dds_keep))
+
+dataIFNg <- df.sign.unstimvsIFNg_extra[rowSums(is.na(df.sign.unstimvsIFNg_extra)) != ncol(df.sign.unstimvsIFNg_extra), ]
+
+IFNgDEGenes <- vst[dataIFNg$Row.names,]
+
+heatmap_DE <- pheatmap(IFNgDEGenes, scale = "row",
+                       show_rownames = FALSE, 
+                       main = "IFNg vs CTRL")
+
+heatmap_DE
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Heatmap_IFNgvsCTRL.pdf", height = 7.5, width=7.5)
+# heatmap_DE
+# dev.off()
+```
+
+```{r Data Points IFNg}
+
+# First, add hgnc_symbol names to the normalized gene expression table
+vst <- as.data.frame(vst)
+
+ensembl  <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl", GRCh=37)
+
+genemap <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"),
+                 filters = "ensembl_gene_id",
+                 values = rownames(vst),
+                 mart = ensembl )
+vst_genes <- merge(x = vst, y = genemap, by.x = 0, by.y = "ensembl_gene_id", all.x = TRUE, all.y = FALSE)
+
+# Now select the top 10 most significant DE genes (that have a name)
+# df.sign.UCDvsCTRL_extra <- df.sign.UCDvsCTRL_extra[df.sign.UCDvsCTRL_extra$hgnc_symbol !="",]
+
+df.sign.unstimvsIFNg_extra <- df.sign.unstimvsIFNg_extra[df.sign.unstimvsIFNg_extra$hgnc_symbol !="",]
+top10Genes_IFNg <- df.sign.unstimvsIFNg_extra$hgnc_symbol[order(df.sign.unstimvsIFNg_extra$padj)[1:10]]
+
+# pick the genes from the top10 from the normalized data frame
+pData_IFNg <- vst_genes[vst_genes$hgnc_symbol %in% top10Genes_IFNg,]
+# Reformat the data frame to make the hgnc_symbol the Row.names and delete the hgnc_symbol column (first determine which column this is!)
+pData_IFNg$Row.names <- pData_IFNg$hgnc_symbol
+pData_IFNg <- pData_IFNg[,-84]
+# Using melt to literally melt a wide data.frame into a long data.frame
+pData_IFNg <- melt(pData_IFNg)
+
+```
+
+```{r plot pData IFNg}
+
+pData_IFNg <- cbind(pData_IFNg, colData[as.character(pData_IFNg$variable),])
+
+top10_Plot <- ggplot(pData_IFNg, aes(x= condition, y= value))+
+                geom_jitter(alpha=0.8)+
+                geom_boxplot(alpha=0.6)+
+                facet_grid(~Row.names, scale="free")+
+                ylab("VST expression values")+
+                xlab("")+
+                theme_bw()+
+                theme(axis.text.x = element_text(angle=45, hjust = 1))
+top10_Plot
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Top10_Sign_IFNgvsCTRL.pdf", height = 7.5, width=7.5)
+# top10_Plot
+# dev.off()
+```
+
+```{r Data Points IL17}
+
+# Now select the top 10 most significant DE genes (that have a name)
+
+df.sign.unstimvsIL17_extra <- df.sign.unstimvsIL17_extra[df.sign.unstimvsIL17_extra$hgnc_symbol !="",]
+top10GenesIL17 <- df.sign.unstimvsIL17_extra$hgnc_symbol[order(df.sign.unstimvsIL17_extra$padj)[1:10]]
+
+# pick the genes from the top10 from the normalized data frame
+pData_IL17 <- vst_genes[vst_genes$hgnc_symbol %in% top10GenesIL17,]
+# Reformat the data frame to make the hgnc_symbol the Row.names and delete the hgnc_symbol column (first determine which column this is!)
+pData_IL17$Row.names <- pData_IL17$hgnc_symbol
+pData_IL17 <- pData_IL17[,-84]
+# Using melt to literally melt a wide data.frame into a long data.frame
+pData_IL17 <- melt(pData_IL17)
+
+```
+
+```{r plot pData}
+
+pData_IL17 <- cbind(pData_IL17, colData[as.character(pData_IL17$variable),])
+
+top10_Plot <- ggplot(pData_IL17, aes(x= condition, y= value))+
+                geom_jitter(alpha=0.8)+
+                geom_boxplot(alpha=0.6)+
+                facet_grid(~Row.names, scale="free")+
+                ylab("VST expression values")+
+                xlab("")+
+                theme_bw()+
+                theme(axis.text.x = element_text(angle=45, hjust = 1))
+top10_Plot
+
+# pdf("C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Top10_Sign_IL17vsCTRL.pdf", height = 7.5, width=7.5)
+# top10_Plot
+# dev.off()
+```
+
+```{r new wd}
+
+#dir.create("C:/Users/jespe/OneDrive/Documenten/RijksUniversiteit Groningen/Master BMS/From Big data to personalized medicine/Practical/Analysis/Final data analysis/Pathway Analysis")
+
+setwd("C:/Users/jespe/OneDrive/Documenten/RijksUniversiteit Groningen/Master BMS/From Big data to personalized medicine/Practical/Analysis/Final data analysis/Pathway Analysis")
+
+```
+
+```{r import/convert pathway data}
+
+df.IL17vsCTRL_all <- read.csv('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IL17vsCTRL_DEresults_all_2022.csv', header=T)
+
+df.IFNgvsCTRL_all <- read.csv('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/IFNgvsCTRL_DEresults_all_2022.csv', header=T)
+
+# Convert ENTREZ to text, so that R would process it correctly
+df.IL17vsCTRL_all$entrezgene_id <- as.character(df.IL17vsCTRL_all$entrezgene_id)
+df.IFNgvsCTRL_all$entrezgene_id <- as.character(df.IFNgvsCTRL_all$entrezgene_id)
+
+nrow(df.IL17vsCTRL_all[is.na(df.IL17vsCTRL_all$entrezgene_id),])
+nrow(df.IFNgvsCTRL_all[is.na(df.IFNgvsCTRL_all$entrezgene_id),])
+
+df.IL17vsCTRL_all <- df.IL17vsCTRL_all[!is.na(df.IL17vsCTRL_all$entrezgene_id),]
+nrow(df.IL17vsCTRL_all[is.na(df.IL17vsCTRL_all$entrezgene_id),])
+
+df.IFNgvsCTRL_all <- df.IFNgvsCTRL_all[!is.na(df.IFNgvsCTRL_all$entrezgene_id),]
+nrow(df.IFNgvsCTRL_all[is.na(df.IFNgvsCTRL_all$entrezgene_id),])
+
+```
+
+```{r Data prep overrepresentation}
+
+# Prepare the data for overrepresentation tests
+# Filter in significant (adjusted P<0.05) results
+# Filter in only genes with larger than than 2-fold expression change 
+df.IL17vsCTRL_sig <- df.IL17vsCTRL_all[df.IL17vsCTRL_all$padj < 0.05 & abs(df.IL17vsCTRL_all$log2FoldChange) > 1, ]
+nrow(df.IL17vsCTRL_sig)
+
+df.IFNgvsCTRL_sig <- df.IFNgvsCTRL_all[df.IFNgvsCTRL_all$padj < 0.05 & abs(df.IFNgvsCTRL_all$log2FoldChange) > 1, ]
+nrow(df.IFNgvsCTRL_sig)
+
+```
+
+```{r fold change ordering}
+
+# Order gene table by effect size (log2 fold-change), from largest to smallest
+
+df.IL17vsCTRL_sig <- df.IL17vsCTRL_sig[order(df.IL17vsCTRL_sig$log2FoldChange, decreasing = T), ]
+dataIL17 <- df.IL17vsCTRL_sig[rowSums(is.na(df.IL17vsCTRL_sig)) != ncol(df.IL17vsCTRL_sig), ]
+# Look at the range of fold changes
+plot(dataIL17$log2FoldChange, xlab = 'Gene', ylab = 'log2(FC)')
+
+
+# Order gene table by effect size (log2 fold-change), from largest to smallest
+df.IFNgvsCTRL_sig <- df.IFNgvsCTRL_sig[order(df.IFNgvsCTRL_sig$log2FoldChange, decreasing = T), ]
+dataIFNg <- df.IFNgvsCTRL_sig[rowSums(is.na(df.IFNgvsCTRL_sig)) != ncol(df.IFNgvsCTRL_sig), ]
+
+# Look at the range of fold changes
+plot(dataIFNg$log2FoldChange, xlab = 'Gene', ylab = 'log2(FC)')
+```
+
+```{r Data prep GSEA}
+
+# Prepare data for GSEA (vector of log2(FC)'s, named by ENTREZ IDs)
+sig_gseaIL17 <- dataIL17$log2FoldChange
+names(sig_gseaIL17) <- dataIL17$entrezgene_id
+sig_gseaIFNg <- dataIFNg$log2FoldChange
+names(sig_gseaIFNg) <- dataIFNg$entrezgene_id
+# This vector of gene names corresponds to all genes we tested in the analysis and will be used later as "gene universe"
+
+```
+
+```{r Enrich KEGG}
+
+KEGG_all_IL17 <- enrichKEGG(gene = names(sig_gseaIL17),
+                 organism = 'hsa',
+                 universe = df.IL17vsCTRL_all$entrezgene_id,
+                 pvalueCutoff = 0.05, 
+                 keyType = "kegg")
+
+KEGG_all_IFNg <- enrichKEGG(gene = names(sig_gseaIFNg),
+                 organism = 'hsa',
+                 universe = df.IFNgvsCTRL_all$entrezgene_id,
+                 pvalueCutoff = 0.05, 
+                 keyType = "kegg")
+
+```
+
+```{r Extra KEGG} 
+
+KEGG_all_IL17 <- setReadable(KEGG_all_IL17, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID")
+head(str(KEGG_all_IL17), 25)
+KEGG_all_IFNg <- setReadable(KEGG_all_IFNg, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID")
+head(str(KEGG_all_IFNg), 25)
+
+KEGG_all_IL17@ontology
+View(head(KEGG_all_IL17@result[, -8], 25))
+KEGG_all_IFNg@ontology
+View(head(KEGG_all_IFNg@result[, -8], 25))
+
+```
+
+```{r KEGG barplots}
+
+input_barplot_IL17 <- KEGG_all_IL17@result[, -15]
+input_barplot_IL17$Description <- factor(input_barplot_IL17$Description, levels = rev(as.character(input_barplot_IL17$Description)))
+# here we apply the default significance thresholds (Benjamini-Hochberg P<0.05 and Storey Q-value<0.2)
+input_barplot_IL17 <- input_barplot_IL17[input_barplot_IL17$p.adjust < 0.05, ]
+
+ggplot(input_barplot_IL17, aes(x = Description, y = -log10(pvalue), fill = Count)) + geom_bar(stat = 'identity') + 
+  theme_classic() + 
+  coord_flip() + scale_fill_continuous(low = 'lightblue', high = 'salmon')
+
+# Adjust the size of the plots, if necessary
+# ggsave('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/KEGG_barplot_IL17.png', units = 'in', height = 6, width = 6, dpi = 400)
+
+
+input_barplot_IFNg <- KEGG_all_IFNg@result[, -15]
+input_barplot_IFNg$Description <- factor(input_barplot_IFNg$Description, levels = rev(as.character(input_barplot_IFNg$Description)))
+# here we apply the default significance thresholds (Benjamini-Hochberg P<0.05 and Storey Q-value<0.2)
+input_barplot_IFNg <- input_barplot_IFNg[input_barplot_IFNg$p.adjust < 0.05, ]
+
+ggplot(input_barplot_IFNg, aes(x = Description, y = -log10(pvalue), fill = Count)) + geom_bar(stat = 'identity') + 
+  theme_classic() + 
+  coord_flip() + scale_fill_continuous(low = 'lightblue', high = 'salmon')
+
+# ggsave('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/KEGG_barplot_IFNg.png', units = 'in', height = 6, width = 6, dpi = 400)
+
+```
+
+```{r Saving CNEplots}
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/KEGG_cnetplot_IL17.png', width = 20, height = 20, res = 400, units = 'in')
+# 
+# cneplot_DE_IL17 <- cnetplot(KEGG_all_IL17, categorySize = "pvalue", showCategory = 5, foldChange = sig_gseaIL17)
+# cneplot_DE_IL17
+# dev.off()
+# 
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/KEGG_cnetplot_IFNg.png', width = 20, height = 20, res = 400, units = 'in')
+# 
+# cneplot_DE_IFNg <- cnetplot(KEGG_all_IFNg, categorySize = "pvalue", showCategory = 5, foldChange = sig_gseaIFNg)
+# cneplot_DE_IFNg
+# dev.off()
+
+```
+
+```{r GO Plot IL17/IFNg} 
+
+GO_all_IL17 <- enrichGO(gene = df.IL17vsCTRL_sig$entrezgene_id,
+                   universe = df.IL17vsCTRL_all$entrezgene_id,
+                   OrgDb = 'org.Hs.eg.db',
+                   ont = 'BP',
+                   pvalueCutoff = 0.05, 
+                   minGSSize = 10, 
+                   maxGSSize = 10000)
+
+View(head(GO_all_IL17@result[, -8], 25))
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/GO_plot_IL17.png', height = 10, width = 10, units = 'in', res = 400)
+GO_plot_IL17 <- plotGOgraph(GO_all_IL17, firstSigNodes = 15)
+# GO_plot_IL17
+# dev.off()
+
+GO_plot_IL17
+
+GO_all_IFNg <- enrichGO(gene = df.IFNgvsCTRL_sig$entrezgene_id,
+                   universe = df.IFNgvsCTRL_all$entrezgene_id,
+                   OrgDb = 'org.Hs.eg.db',
+                   ont = 'BP',
+                   pvalueCutoff = 0.05, 
+                   minGSSize = 10, 
+                   maxGSSize = 10000)
+
+View(head(GO_all_IFNg@result[, -8], 25))
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/GO_plot_IFNg.png', height = 10, width = 10, units = 'in', res = 400)
+GO_plot_IFNg <- plotGOgraph(GO_all_IFNg, firstSigNodes = 15)
+# GO_plot_IFNg
+# dev.off()
+
+GO_plot_IFNg
+
+```
+
+```{r KEGG GSEA}
+
+KEGG_GSEA_IL17 <- gseKEGG(geneList = sig_gseaIL17,
+                         organism = 'hsa',
+                         minGSSize = 1,
+                         scoreType = "pos",
+                         pvalueCutoff = 0.05,
+                         verbose = FALSE)
+
+#returning 0
+
+KEGG_GSEA_IFNg <- gseKEGG(geneList = sig_gseaIFNg,
+                         organism = 'hsa',
+                         minGSSize = 1,
+                         scoreType = "pos",
+                         pvalueCutoff = 0.05,
+                         verbose = FALSE)
+
+View(head(KEGG_GSEA_IFNg@result[, -c(10:12)], 25))
+
+```
+
+```{r Save GSEA}
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/GSEA_plot_IFNg.png', height = 6, width = 9, units = 'in', res = 400)
+# 
+# # Here the geneSetID we specify the first (most significant) GSEA result to visualize:
+GSEA_1 <- gseaplot(KEGG_GSEA_IFNg, geneSetID = KEGG_GSEA_IFNg@result$ID[1])
+GSEA_1
+# dev.off()
+
+```
+
+```{r DotPlot IFNg}
+library(clusterProfiler)
+React_all_IFNg <- enrichPathway(gene = names(sig_gseaIFNg),
+                 organism = 'human',
+                 universe = df.IFNgvsCTRL_all$entrezgene_id,
+                 pvalueCutoff = 0.05)
+
+
+
+React_all_IFNg <- setReadable(React_all_IFNg, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID")
+View(head(React_all_IFNg@result[, -c(10:12)], 25))
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Reactome_dotplot_IFNg.png', height = 6, width = 9, units = 'in', res = 400)
+# 
+dotplot.React_IFNg <- dotplot(React_all_IFNg, x="count", showCategory=15, color = "p.adjust", font.size = 9, label_format = 50) 
+# dotplot.React_IFNg
+# dev.off()
+
+dotplot.React_IFNg
+
+```
+
+```{r DotPlot IL17, warning=TRUE}
+library(clusterProfiler)
+React_all_IL17 <- enrichPathway(gene = names(sig_gseaIL17),
+                 organism = 'human',
+                 universe = df.IL17vsCTRL_all$entrezgene_id,
+                 pvalueCutoff = 0.05)
+
+
+
+React_all_IL17 <- setReadable(React_all_IL17, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID")
+View(head(React_all_IL17@result[, -c(10:12)], 25))
+
+# png('C:/Users/jespe/OneDrive/Bureaublad/R_results_csv/Reactome_dotplot_IL17.png', height = 6, width = 9, units = 'in', res = 400)
+# 
+dotplot.React_IL17 <- dotplot(React_all_IL17, x="count", showCategory=15, color = "p.adjust", font.size = 9, label_format = 50) 
+# dotplot.React_IL17
+# dev.off()
+
+dotplot.React_IL17
+
+
+```
+
+
+
